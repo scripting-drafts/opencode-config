@@ -7,4 +7,4 @@ Copy this tree to `~/.config/opencode/` and reload OpenCode.
 - `find-conversation`, `taller-tabs`, `timestamps-final`: TUI plugins.
 - `fetch-verbose`: redacted HTTP diagnostics for model requests.
 
-`AGENTS.md` and `service.json` are intentionally excluded.
+Local agent instructions and service credentials are not published.
