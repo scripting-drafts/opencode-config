@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "session": {
+    "scrollbar": true,
+    "sidebar": "hide",
+    "verbosity": "low",
+    "image_preview": true,
+    "permissions": "prompt",
+    "grouping": "auto"
+  },
+  "animations": true,
+  "theme": {
+    "name": "nord",
+    "mode": "light"
+  },
+  "prompt": {
+    "image_preview": true,
+    "paste": "full"
+  },
+  "scroll": {
+    "acceleration": true
+  },
+  "tabs": {
+    "layout": "horizontal",
+    "indicators": "status",
+    "scope": "cwd",
+    "mode": "on"
+  },
+  "plugins": [
+    "./ui-plugins/taller-tabs",
+    "./ui-plugins/timestamps-final",
+    "./ui-plugins/find-conversation",
+    "./ui-plugins/shift-enter-newline"
+  ]
+}
