@@ -1,36 +1,42 @@
 import { CliRenderEvents, type RGBA } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
 
-// Share of the theme accent blended into tab backgrounds.
+// Share of the OpenCode blue blended into tab backgrounds.
 const ACTIVE_TINT = 0.55
 const RUNNING_TINT = 0.35
 const ACTIVE_RUNNING_TINT = 0.68
 // Rescan the renderable tree at most this often.
 const RESCAN_MS = 100
 
+// `hue.blue[200]` from the built-in OpenCode palette, per mode.
+const OPENCODE_BLUE = {
+  light: [0x3b, 0x7d, 0xd8],
+  dark: [0x5c, 0x9c, 0xf5],
+} as const
+
 type Theme = {
   background: {
     base: RGBA
     raised: { base: RGBA; high: RGBA }
   }
-  hue: { accent: Record<number, RGBA> }
 }
 
 type TabState = {
-  // Host-owned background to restore when the tab is no longer accented.
+  // Host-owned background to restore when the tab is no longer tinted.
   original: RGBA | undefined
-  // Last accent we painted, used to detect host background changes.
+  // Last tint we painted, used to detect host background changes.
   applied: RGBA | undefined
 }
 
 const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
   a === b || (a !== undefined && b !== undefined && a.equals?.(b) === true)
 
-function accentTint(theme: Theme, amount: number): RGBA {
+function blueTint(theme: Theme, amount: number): RGBA {
   const base = theme.background.base.toInts()
-  const accent = theme.hue.accent[200].toInts()
+  const luma = (base[0]! * 299 + base[1]! * 587 + base[2]! * 114) / 1000
+  const blue = luma > 128 ? OPENCODE_BLUE.light : OPENCODE_BLUE.dark
   const mix = (index: number) =>
-    Math.round(base[index]! + (accent[index]! - base[index]!) * amount)
+    Math.round(base[index]! + (blue[index]! - base[index]!) * amount)
   const Color = theme.background.base.constructor as {
     fromInts: (r: number, g: number, b: number) => RGBA
   }
@@ -109,7 +115,7 @@ export default Plugin.define({
                 : selected
                   ? ACTIVE_TINT
                   : RUNNING_TINT
-            const tint = accentTint(theme, amount)
+            const tint = blueTint(theme, amount)
             state.applied = tint
             if (!sameColor(current, tint)) {
               node.backgroundColor = tint
@@ -150,7 +156,7 @@ export default Plugin.define({
 
       scan(context.renderer.root)
 
-      // Tabs that were closed or replaced while accented.
+      // Tabs that were closed or replaced while tinted.
       for (const [tab, state] of states) {
         const node = tab as any
         if (live.has(tab) && !node.isDestroyed) continue
@@ -169,7 +175,7 @@ export default Plugin.define({
         }, 0)
       }
       // The host may overwrite the tint while its selection animation settles.
-      // Rescan once more after that animation to put the accent back on top.
+      // Rescan once more after that animation to put the tint back on top.
       if (followUp && !rescan) {
         rescan = setTimeout(() => {
           rescan = undefined
@@ -181,7 +187,7 @@ export default Plugin.define({
 
     context.renderer.on(CliRenderEvents.FRAME, apply)
     // The host may already be idle on first paint; ask for one more frame so
-    // the selected tab is accented immediately.
+    // the selected tab is tinted immediately.
     const kick = setTimeout(() => {
       lastScan = 0
       apply()
