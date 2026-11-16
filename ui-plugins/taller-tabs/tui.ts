@@ -71,7 +71,6 @@ export default Plugin.define({
     const states = new Map<BoxRenderable, TabState>()
     const hovering = new Map<BoxRenderable, { width: number }>()
     let lastScan = 0
-    let fullHeight = false
 
     const release = (tab: BoxRenderable, state: TabState) => {
       if (state.overlay && !state.overlay.isDestroyed) {
@@ -204,21 +203,16 @@ export default Plugin.define({
         ),
       )
 
-      // Compact by default; only the hovered tab opens to the full two rows.
-      const wasFull = fullHeight
-      const full = hovered.includes(true)
-      if (strip.height !== (full ? 2 : 1)) strip.height = full ? 2 : 1
+      // One extra layout row holds the thin base edge; the hovered tab uses
+      // the full row, the others keep an upper-eighth lip.
+      if (strip.height !== 2) strip.height = 2
       for (let index = 0; index < tabs.length; index++) {
         const { tab } = tabs[index]!
         const height = hovered[index] ? 2 : 1
         if (tab.height !== height) tab.height = height
         const edge = edges.get(tab)
-        const show = hovered[index] === true && wasFull
-        if (edge && edge.visible !== show) {
-          edge.visible = show
-        }
+        if (edge && !edge.visible) edge.visible = true
       }
-      fullHeight = full
 
       const now = Date.now()
       if (now - lastScan < RESCAN_MS) return
@@ -310,20 +304,22 @@ class HalfRowPulse extends Renderable {
   }
 
   protected override renderSelf(buffer: OptimizedBuffer, deltaTime: number) {
+    const full = this.tab.height >= 2
     const tint = this.tint()
-    const background = tint ?? this.page()
     const base =
       tint ?? (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
+    const background = full && tint ? tint : this.page()
     if (!base.equals?.((this.pulse as any)._backgroundColor)) {
       ;(this.pulse as any)._backgroundColor = base
     }
     buffer.drawText(
-      "▀".repeat(this.width),
+      (full ? "▀" : "▔").repeat(this.width),
       this.screenX,
       this.screenY,
       base,
       background,
     )
+    if (!full) return
 
     // Replay the host pulse's paint, not its clock: every half-row cell uses
     // exactly the same running, glow, and completion color as the row above.
