@@ -59,10 +59,11 @@ class HalfRowPulse extends Renderable {
   }
 
   protected override renderSelf(buffer: OptimizedBuffer, deltaTime: number) {
-    const background = this.page()
     // Use the tint handed over by the running-tab plugin so the half-row
-    // matches even while the host rewrites the pulse background.
+    // matches even while the host rewrites the pulse background. With a tint,
+    // fill the whole row so the tab matches the prompt box uniformly.
     const tint = (this.tab as any).__localTabTint as RGBA | undefined
+    const background = tint ?? this.page()
     const base = tint ?? (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
     if (!base.equals?.((this.pulse as any)._backgroundColor)) {
       ;(this.pulse as any)._backgroundColor = base
