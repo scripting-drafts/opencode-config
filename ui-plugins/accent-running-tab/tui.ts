@@ -8,10 +8,10 @@ const ACTIVE_RUNNING_TINT = 0.68
 // Rescan the renderable tree at most this often.
 const RESCAN_MS = 100
 
-// `hue.blue[500]` in light and `hue.blue[100]` in dark from the built-in
-// OpenCode palette: soft sky blues rather than the saturated royal 200.
+// `hue.blue[600]` in light and `hue.blue[100]` in dark from the built-in
+// OpenCode palette: soft powder blues with the saturation eased off.
 const OPENCODE_BLUE = {
-  light: [0x7d, 0xb1, 0xfc],
+  light: [0x9c, 0xc3, 0xfa],
   dark: [0x82, 0xb4, 0xfb],
 } as const
 
