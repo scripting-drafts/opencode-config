@@ -18,6 +18,7 @@ type Theme = {
     base: RGBA
     action: { primary: { hovered: RGBA } }
   }
+  border: { base: RGBA }
   hue: { blue: Record<number, RGBA> }
 }
 
@@ -122,6 +123,7 @@ export default Plugin.define({
             pulse,
             () => states.get(child)?.tint,
             () => context.theme.background.base,
+            () => context.theme.border.base,
           )
           child.add(edge)
           edges.set(child, edge)
@@ -291,6 +293,7 @@ class HalfRowPulse extends Renderable {
     private pulse: Renderable,
     private tint: () => RGBA | undefined,
     private page: () => RGBA,
+    private border: () => RGBA,
   ) {
     super(context, {
       id: `local-half-tab-${tab.id}`,
@@ -307,10 +310,15 @@ class HalfRowPulse extends Renderable {
     const full = this.tab.height >= 2
     const tint = this.tint()
     const base =
-      tint ?? (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
+      tint ??
+      (full
+        ? ((this.pulse as any)._backgroundColor ?? this.tab.backgroundColor)
+        : this.border())
     const background = full && tint ? tint : this.page()
-    if (!base.equals?.((this.pulse as any)._backgroundColor)) {
-      ;(this.pulse as any)._backgroundColor = base
+    if (tint || full) {
+      if (!base.equals?.((this.pulse as any)._backgroundColor)) {
+        ;(this.pulse as any)._backgroundColor = base
+      }
     }
     buffer.drawText(
       (full ? "▀" : "▔").repeat(this.width),
