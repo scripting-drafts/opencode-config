@@ -69,7 +69,6 @@ export default Plugin.define({
     let strip: BoxRenderable | undefined
     const edges = new Map<BoxRenderable, HalfRowPulse>()
     const states = new Map<BoxRenderable, TabState>()
-    const hovering = new Map<BoxRenderable, { width: number }>()
     let lastScan = 0
 
     const release = (tab: BoxRenderable, state: TabState) => {
@@ -96,9 +95,6 @@ export default Plugin.define({
       }
       for (const tab of states.keys()) {
         if (tab.isDestroyed) states.delete(tab)
-      }
-      for (const tab of hovering.keys()) {
-        if (tab.isDestroyed) hovering.delete(tab)
       }
       if (!strip || strip.isDestroyed) {
         strip = findStrip(context.renderer.root, context.renderer.width)
@@ -140,63 +136,6 @@ export default Plugin.define({
           ),
       )
 
-      const count = (context.ui.tabs.list?.() ?? []).length || tabs.length
-      const number = Math.max(2, String(count + 1).length)
-
-      // The host gives the selected tab the leftover width. Match it to 90%
-      // of the median neighbor and shrink the title to fit the narrower box.
-      const current = selected.findIndex(Boolean)
-      if (current !== -1 && tabs.length > 1) {
-        const widths = tabs
-          .filter((_, index) => index !== current)
-          .map(({ tab }) => tab.width)
-          .filter((width) => Number.isFinite(width) && width > 0)
-          .sort((a, b) => a - b)
-        if (widths.length > 0) {
-          const median = widths[Math.floor(widths.length / 2)]!
-          const target = Math.max(1, Math.round(median * 0.9))
-          const tab = tabs[current]!.tab
-          if (tab.width !== target) tab.width = target
-          const title = tabs[current]!.title
-          if (title) {
-            const width = Math.max(1, target - 1 - number - 2)
-            if (title.width !== width) title.width = width
-          }
-        }
-      }
-
-      // A hovered neighbor keeps its normal title width; widen it by the two
-      // columns the close button occupies.
-      for (let index = 0; index < tabs.length; index++) {
-        const { tab, title } = tabs[index]!
-        if (selected[index]) {
-          hovering.delete(tab)
-          continue
-        }
-        const isHovered = sameColor(
-          tab.backgroundColor,
-          theme.background.action.primary.hovered,
-        )
-        const saved = hovering.get(tab)
-        if (isHovered) {
-          if (!saved) hovering.set(tab, { width: tab.width })
-          const base = hovering.get(tab)!.width
-          const width = base + 2
-          if (tab.width !== width) tab.width = width
-          if (title) {
-            const titleWidth = Math.max(1, base - 1 - number)
-            if (title.width !== titleWidth) title.width = titleWidth
-          }
-        } else if (saved) {
-          if (tab.width !== saved.width) tab.width = saved.width
-          if (title) {
-            const titleWidth = Math.max(1, saved.width - 1 - number)
-            if (title.width !== titleWidth) title.width = titleWidth
-          }
-          hovering.delete(tab)
-        }
-      }
-
       const now = Date.now()
       if (now - lastScan < RESCAN_MS) return
       lastScan = now
@@ -209,7 +148,7 @@ export default Plugin.define({
           state = { overlay: undefined, tint: undefined, pulse: undefined }
           states.set(tab, state)
         }
-        if (selected[index] || pulse.inner?.active === true) {
+        if (selected[index]) {
           tint ??= fade(theme.hue.blue[200], theme.background.base)
           state.pulse = pulse
 
@@ -256,12 +195,8 @@ export default Plugin.define({
       for (const [tab, state] of states) {
         release(tab, state)
       }
-      for (const [tab, saved] of hovering) {
-        if (!tab.isDestroyed) tab.width = saved.width
-      }
       edges.clear()
       states.clear()
-      hovering.clear()
       if (strip && !strip.isDestroyed) strip.height = 1
     }
   },
