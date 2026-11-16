@@ -1,19 +1,8 @@
 import { BoxRenderable, CliRenderEvents, type RGBA } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
 
-// Share of the OpenCode blue blended into tab backgrounds.
-const ACTIVE_TINT = 0.55
-const RUNNING_TINT = 0.35
-const ACTIVE_RUNNING_TINT = 0.68
 // Rescan the renderable tree at most this often.
 const RESCAN_MS = 100
-
-// `hue.blue[600]` in light and `hue.blue[100]` in dark from the built-in
-// OpenCode palette: soft powder blues with the saturation eased off.
-const OPENCODE_BLUE = {
-  light: [0x9c, 0xc3, 0xfa],
-  dark: [0x82, 0xb4, 0xfb],
-} as const
 
 type Theme = {
   background: {
@@ -21,6 +10,7 @@ type Theme = {
     raised: { base: RGBA; high: RGBA }
     action: { primary: { hovered: RGBA } }
   }
+  decrease: (color: RGBA) => RGBA
 }
 
 type TabState = {
@@ -32,16 +22,9 @@ type TabState = {
 const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
   a === b || (a !== undefined && b !== undefined && a.equals?.(b) === true)
 
-function blueTint(theme: Theme, amount: number): RGBA {
-  const base = theme.background.base.toInts()
-  const luma = (base[0]! * 299 + base[1]! * 587 + base[2]! * 114) / 1000
-  const blue = luma > 128 ? OPENCODE_BLUE.light : OPENCODE_BLUE.dark
-  const mix = (index: number) =>
-    Math.round(base[index]! + (blue[index]! - base[index]!) * amount)
-  const Color = theme.background.base.constructor as {
-    fromInts: (r: number, g: number, b: number) => RGBA
-  }
-  return Color.fromInts(mix(0), mix(1), mix(2))
+function promptTint(theme: Theme): RGBA {
+  // Same fill the prompt input box uses.
+  return theme.decrease(theme.background.raised.base)
 }
 
 function findTitle(node: any): any {
@@ -119,13 +102,7 @@ export default Plugin.define({
           }
 
           if (selected || running) {
-            const amount =
-              selected && running
-                ? ACTIVE_RUNNING_TINT
-                : selected
-                  ? ACTIVE_TINT
-                  : RUNNING_TINT
-            const tint = blueTint(theme, amount)
+            const tint = promptTint(theme)
             // Stable hand-off for taller-tabs; the host may rewrite the
             // pulse background during its selection animation.
             ;(node as any).__localTabTint = tint
