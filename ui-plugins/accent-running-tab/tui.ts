@@ -66,6 +66,7 @@ export default Plugin.define({
     // Hand the tab back to the host: remove the tint layer and let the pulse
     // use the host background again.
     const release = (tab: any, state: TabState) => {
+      delete tab.__localTabTint
       if (state.overlay && !state.overlay.isDestroyed) {
         state.overlay.destroy()
       }
@@ -125,6 +126,9 @@ export default Plugin.define({
                   ? ACTIVE_TINT
                   : RUNNING_TINT
             const tint = blueTint(theme, amount)
+            // Stable hand-off for taller-tabs; the host may rewrite the
+            // pulse background during its selection animation.
+            ;(node as any).__localTabTint = tint
 
             // Paint on a child overlay instead of the host background so the
             // host's selection animation cannot flash the tab back to its own

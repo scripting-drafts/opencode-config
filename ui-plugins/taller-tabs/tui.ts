@@ -60,9 +60,13 @@ class HalfRowPulse extends Renderable {
 
   protected override renderSelf(buffer: OptimizedBuffer, deltaTime: number) {
     const background = this.page()
-    // Follow the pulse's background so a tint layer painted above this row
-    // matches the half-row too (for example the running-tab blue).
-    const base = (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
+    // Use the tint handed over by the running-tab plugin so the half-row
+    // matches even while the host rewrites the pulse background.
+    const tint = (this.tab as any).__localTabTint as RGBA | undefined
+    const base = tint ?? (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
+    if (!base.equals?.((this.pulse as any)._backgroundColor)) {
+      ;(this.pulse as any)._backgroundColor = base
+    }
     buffer.drawText("▀".repeat(this.width), this.screenX, this.screenY, base, background)
 
     // Replay the host pulse's paint, not its clock: every half-row cell uses
