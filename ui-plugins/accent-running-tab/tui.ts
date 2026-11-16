@@ -1,16 +1,14 @@
-import { BoxRenderable, CliRenderEvents, type RGBA } from "@opentui/core"
+import { BoxRenderable, CliRenderEvents, RGBA } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
 
 // Rescan the renderable tree at most this often.
 const RESCAN_MS = 100
+// Heavy vertical line used for the prompt box's left border.
+const PROMPT_BORDER = 0x2503
 
 type Theme = {
-  background: {
-    base: RGBA
-    raised: { base: RGBA; high: RGBA }
-    action: { primary: { hovered: RGBA } }
-  }
-  decrease: (color: RGBA) => RGBA
+  background: { action: { primary: { hovered: RGBA } } }
+  border: { base: RGBA }
 }
 
 type TabState = {
@@ -21,11 +19,6 @@ type TabState = {
 
 const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
   a === b || (a !== undefined && b !== undefined && a.equals?.(b) === true)
-
-function promptTint(theme: Theme): RGBA {
-  // Same fill the prompt input box uses.
-  return theme.decrease(theme.background.raised.base)
-}
 
 function findTitle(node: any): any {
   for (const child of node.getChildren?.() ?? []) {
@@ -45,6 +38,29 @@ export default Plugin.define({
   setup(context) {
     const states = new Map<object, TabState>()
     let lastScan = 0
+    // Last color read from the prompt box's left border.
+    let promptLine: RGBA | undefined
+
+    const promptBorder = (theme: Theme): RGBA => {
+      try {
+        const buffer = context.renderer.currentRenderBuffer as any
+        const found = buffer.withBuffers((cells: any) => {
+          let bestX = Infinity
+          let best: RGBA | undefined
+          for (let y = Math.max(0, cells.height - 10); y < cells.height; y++) {
+            for (let x = 0; x < bestX && x < cells.width; x++) {
+              const index = y * cells.width + x
+              if (cells.char[index] !== PROMPT_BORDER) continue
+              bestX = x
+              best = RGBA.fromArray(cells.fg.slice(index * 4, index * 4 + 4))
+            }
+          }
+          return best
+        })
+        if (found) promptLine = found
+      } catch {}
+      return promptLine ?? theme.border.base
+    }
 
     // Hand the tab back to the host: remove the tint layer and let the pulse
     // use the host background again.
@@ -102,7 +118,7 @@ export default Plugin.define({
           }
 
           if (selected || running) {
-            const tint = promptTint(theme)
+            const tint = promptBorder(theme)
             // Stable hand-off for taller-tabs; the host may rewrite the
             // pulse background during its selection animation.
             ;(node as any).__localTabTint = tint
