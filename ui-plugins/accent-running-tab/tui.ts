@@ -26,6 +26,7 @@ type Theme = {
 type TabState = {
   overlay: BoxRenderable | undefined
   tint: RGBA | undefined
+  pulse: any | undefined
 }
 
 const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
@@ -62,6 +63,23 @@ export default Plugin.define({
     const states = new Map<object, TabState>()
     let lastScan = 0
 
+    // Hand the tab back to the host: remove the tint layer and let the pulse
+    // use the host background again.
+    const release = (tab: any, state: TabState) => {
+      if (state.overlay && !state.overlay.isDestroyed) {
+        state.overlay.destroy()
+      }
+      if (
+        state.pulse &&
+        !state.pulse.isDestroyed &&
+        !tab.isDestroyed &&
+        state.tint
+      ) {
+        state.pulse._backgroundColor = tab.backgroundColor
+        state.pulse.requestRender?.()
+      }
+    }
+
     const apply = () => {
       const now = Date.now()
       if (now - lastScan < RESCAN_MS) return
@@ -95,7 +113,7 @@ export default Plugin.define({
           const running = pulse.inner?.active === true
           let state = states.get(node)
           if (!state) {
-            state = { overlay: undefined, tint: undefined }
+            state = { overlay: undefined, tint: undefined, pulse: undefined }
             states.set(node, state)
           }
 
@@ -128,19 +146,14 @@ export default Plugin.define({
             }
 
             // Keep the running pulse's edge on the same background.
+            state.pulse = pulse
             if (!sameColor(state.tint, tint)) {
               state.tint = tint
               pulse._backgroundColor = tint
               pulse.requestRender?.()
             }
           } else {
-            if (state.overlay && !state.overlay.isDestroyed) {
-              state.overlay.destroy()
-            }
-            if (state.tint) {
-              pulse._backgroundColor = node.backgroundColor
-              pulse.requestRender?.()
-            }
+            release(node, state)
             states.delete(node)
           }
           // Tabs never nest, so skip their text and indicator children.
@@ -155,9 +168,7 @@ export default Plugin.define({
       for (const [tab, state] of states) {
         const node = tab as any
         if (live.has(tab) && !node.isDestroyed) continue
-        if (state.overlay && !state.overlay.isDestroyed) {
-          state.overlay.destroy()
-        }
+        release(node, state)
         states.delete(tab)
       }
     }
@@ -173,10 +184,8 @@ export default Plugin.define({
     return () => {
       clearTimeout(kick)
       context.renderer.off(CliRenderEvents.FRAME, apply)
-      for (const state of states.values()) {
-        if (state.overlay && !state.overlay.isDestroyed) {
-          state.overlay.destroy()
-        }
+      for (const [tab, state] of states) {
+        release(tab as any, state)
       }
       states.clear()
     }
