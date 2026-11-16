@@ -1,13 +1,18 @@
 import { BoxRenderable, CliRenderEvents, RGBA } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
 
+// Share of the prompt border color blended over the page.
+const TINT_OPACITY = 0.4
 // Rescan the renderable tree at most this often.
 const RESCAN_MS = 100
 // Heavy vertical line used for the prompt box's left border.
 const PROMPT_BORDER = 0x2503
 
 type Theme = {
-  background: { action: { primary: { hovered: RGBA } } }
+  background: {
+    base: RGBA
+    action: { primary: { hovered: RGBA } }
+  }
   border: { base: RGBA }
 }
 
@@ -19,6 +24,17 @@ type TabState = {
 
 const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
   a === b || (a !== undefined && b !== undefined && a.equals?.(b) === true)
+
+function fade(color: RGBA, base: RGBA): RGBA {
+  const [r, g, b] = color.toInts()
+  const [br, bg, bb] = base.toInts()
+  const mix = (from: number, to: number) =>
+    Math.round(to + (from - to) * TINT_OPACITY)
+  const Color = base.constructor as {
+    fromInts: (r: number, g: number, b: number) => RGBA
+  }
+  return Color.fromInts(mix(r!, br!), mix(g!, bg!), mix(b!, bb!))
+}
 
 function findTitle(node: any): any {
   for (const child of node.getChildren?.() ?? []) {
@@ -118,7 +134,7 @@ export default Plugin.define({
           }
 
           if (selected || running) {
-            const tint = promptBorder(theme)
+            const tint = fade(promptBorder(theme), theme.background.base)
             // Stable hand-off for taller-tabs; the host may rewrite the
             // pulse background during its selection animation.
             ;(node as any).__localTabTint = tint
