@@ -70,6 +70,7 @@ export default Plugin.define({
     const edges = new Map<BoxRenderable, HalfRowPulse>()
     const states = new Map<BoxRenderable, TabState>()
     let lastScan = 0
+    let fullHeight = false
 
     const release = (tab: BoxRenderable, state: TabState) => {
       if (state.overlay && !state.overlay.isDestroyed) {
@@ -100,7 +101,6 @@ export default Plugin.define({
         strip = findStrip(context.renderer.root, context.renderer.width)
       }
       if (!strip) return
-      if (strip.height === 1) strip.height = 2
 
       const tabs: Array<{
         tab: BoxRenderable
@@ -135,6 +135,28 @@ export default Plugin.define({
             theme.background.action.primary.hovered,
           ),
       )
+      const hovered = tabs.map(({ tab }) =>
+        sameColor(
+          tab.backgroundColor,
+          theme.background.action.primary.hovered,
+        ),
+      )
+
+      // Compact by default; only the hovered tab opens to the full two rows.
+      const wasFull = fullHeight
+      const full = hovered.includes(true)
+      if (strip.height !== (full ? 2 : 1)) strip.height = full ? 2 : 1
+      for (let index = 0; index < tabs.length; index++) {
+        const { tab } = tabs[index]!
+        const height = hovered[index] ? 2 : 1
+        if (tab.height !== height) tab.height = height
+        const edge = edges.get(tab)
+        const show = hovered[index] === true && wasFull
+        if (edge && edge.visible !== show) {
+          edge.visible = show
+        }
+      }
+      fullHeight = full
 
       const now = Date.now()
       if (now - lastScan < RESCAN_MS) return
