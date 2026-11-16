@@ -136,8 +136,8 @@ export default Plugin.define({
           ),
       )
 
-      // The host gives the selected tab the leftover width. Match it to the
-      // median neighbor and shrink the title to fit the narrower box.
+      // The host gives the selected tab the leftover width. Match it to 90%
+      // of the median neighbor and shrink the title to fit the narrower box.
       const current = selected.findIndex(Boolean)
       if (current !== -1 && tabs.length > 1) {
         const widths = tabs
@@ -146,7 +146,8 @@ export default Plugin.define({
           .filter((width) => Number.isFinite(width) && width > 0)
           .sort((a, b) => a - b)
         if (widths.length > 0) {
-          const target = widths[Math.floor(widths.length / 2)]!
+          const median = widths[Math.floor(widths.length / 2)]!
+          const target = Math.max(1, Math.round(median * 0.9))
           const tab = tabs[current]!.tab
           if (tab.width !== target) tab.width = target
           const title = tabs[current]!.title
