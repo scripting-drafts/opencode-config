@@ -10,9 +10,7 @@ import { Plugin } from "@opencode/plugin/tui"
 
 // Tint refresh interval.
 const RESCAN_MS = 100
-// Heavy vertical line used for the prompt box's left border.
-const PROMPT_BORDER = 0x2503
-// Share of the prompt border color blended over the page.
+// Share of the Build blue blended over the page.
 const TINT_OPACITY = 0.4
 
 type Theme = {
@@ -20,7 +18,7 @@ type Theme = {
     base: RGBA
     action: { primary: { hovered: RGBA } }
   }
-  border: { base: RGBA }
+  hue: { blue: Record<number, RGBA> }
 }
 
 type TabState = {
@@ -72,28 +70,6 @@ export default Plugin.define({
     const edges = new Map<BoxRenderable, HalfRowPulse>()
     const states = new Map<BoxRenderable, TabState>()
     let lastScan = 0
-    let promptLine: RGBA | undefined
-
-    const promptBorder = (theme: Theme): RGBA => {
-      try {
-        const buffer = context.renderer.currentRenderBuffer as any
-        const found = buffer.withBuffers((cells: any) => {
-          let bestX = Infinity
-          let best: RGBA | undefined
-          for (let y = Math.max(0, cells.height - 10); y < cells.height; y++) {
-            for (let x = 0; x < bestX && x < cells.width; x++) {
-              const index = y * cells.width + x
-              if (cells.char[index] !== PROMPT_BORDER) continue
-              bestX = x
-              best = RGBA.fromArray(cells.fg.slice(index * 4, index * 4 + 4))
-            }
-          }
-          return best
-        })
-        if (found) promptLine = found
-      } catch {}
-      return promptLine ?? theme.border.base
-    }
 
     const release = (tab: BoxRenderable, state: TabState) => {
       if (state.overlay && !state.overlay.isDestroyed) {
@@ -197,7 +173,7 @@ export default Plugin.define({
           states.set(tab, state)
         }
         if (selected[index] || pulse.inner?.active === true) {
-          tint ??= fade(promptBorder(theme), theme.background.base)
+          tint ??= fade(theme.hue.blue[200], theme.background.base)
           state.pulse = pulse
 
           if (!state.overlay || state.overlay.isDestroyed) {
