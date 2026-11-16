@@ -1,4 +1,4 @@
-import { CliRenderEvents, type RGBA } from "@opentui/core"
+import { BoxRenderable, CliRenderEvents, type RGBA } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
 
 // Share of the OpenCode blue blended into tab backgrounds.
@@ -8,24 +8,24 @@ const ACTIVE_RUNNING_TINT = 0.68
 // Rescan the renderable tree at most this often.
 const RESCAN_MS = 100
 
-// `hue.blue[200]` from the built-in OpenCode palette, per mode.
+// `hue.blue[300]` in light and `hue.blue[100]` in dark from the built-in
+// OpenCode palette: one step lighter than the default 200.
 const OPENCODE_BLUE = {
-  light: [0x3b, 0x7d, 0xd8],
-  dark: [0x5c, 0x9c, 0xf5],
+  light: [0x51, 0x8e, 0xe4],
+  dark: [0x82, 0xb4, 0xfb],
 } as const
 
 type Theme = {
   background: {
     base: RGBA
     raised: { base: RGBA; high: RGBA }
+    action: { primary: { hovered: RGBA } }
   }
 }
 
 type TabState = {
-  // Host-owned background to restore when the tab is no longer tinted.
-  original: RGBA | undefined
-  // Last tint we painted, used to detect host background changes.
-  applied: RGBA | undefined
+  overlay: BoxRenderable | undefined
+  tint: RGBA | undefined
 }
 
 const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
@@ -61,8 +61,6 @@ export default Plugin.define({
   setup(context) {
     const states = new Map<object, TabState>()
     let lastScan = 0
-    let paint: ReturnType<typeof setTimeout> | undefined
-    let rescan: ReturnType<typeof setTimeout> | undefined
 
     const apply = () => {
       const now = Date.now()
@@ -71,8 +69,6 @@ export default Plugin.define({
 
       const theme = context.theme as unknown as Theme
       const live = new Set<object>()
-      let changed = false
-      let followUp = false
 
       const scan = (node: any) => {
         if (node.isDestroyed) return
@@ -84,27 +80,22 @@ export default Plugin.define({
         if (pulse) {
           live.add(node)
 
-          // A selected tab is bold, while the host paints it with raised.high.
-          // A merely hovered tab is also bold but uses raised.base instead.
+          // A selected tab is bold; a merely hovered tab is bold too but the
+          // host paints it with the action hover background.
           const title = findTitle(node)
           const selected =
             ((title?.attributes ?? 0) & 1) !== 0 &&
-            (!sameColor(node.backgroundColor, theme.background.raised.base) ||
-              sameColor(
-                states.get(node)?.original,
-                theme.background.raised.high,
-              ))
+            !sameColor(
+              node.backgroundColor,
+              theme.background.action.primary.hovered,
+            )
 
           // The host sets `active` for a session that is running and does not
           // need attention (permission or question).
           const running = pulse.inner?.active === true
-          const current = node.backgroundColor
           let state = states.get(node)
-
-          // The host owns the background while it is not our tint, so remember
-          // its latest value before painting over it.
-          if (!state || !sameColor(current, state.applied)) {
-            state = { original: current, applied: undefined }
+          if (!state) {
+            state = { overlay: undefined, tint: undefined }
             states.set(node, state)
           }
 
@@ -116,35 +107,39 @@ export default Plugin.define({
                   ? ACTIVE_TINT
                   : RUNNING_TINT
             const tint = blueTint(theme, amount)
-            state.applied = tint
-            if (!sameColor(current, tint)) {
-              node.backgroundColor = tint
-              changed = true
-              followUp = true
+
+            // Paint on a child overlay instead of the host background so the
+            // host's selection animation cannot flash the tab back to its own
+            // color. Text and pulse already sit above zIndex 0.
+            if (!state.overlay || state.overlay.isDestroyed) {
+              state.overlay = new BoxRenderable(context.renderer, {
+                id: `local-tab-tint-${pulse.id}`,
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                zIndex: 0,
+                backgroundColor: tint,
+              })
+              node.add(state.overlay, 0)
+            } else if (!sameColor(state.overlay.backgroundColor, tint)) {
+              state.overlay.backgroundColor = tint
             }
-            if (
-              pulse.backgroundColor &&
-              !sameColor(pulse.backgroundColor, tint)
-            ) {
-              pulse.backgroundColor = tint
-              changed = true
-              followUp = true
+
+            // Keep the running pulse's edge on the same background.
+            if (!sameColor(state.tint, tint)) {
+              state.tint = tint
+              pulse._backgroundColor = tint
+              pulse.requestRender?.()
             }
           } else {
-            if (state.applied) {
-              if (!sameColor(current, state.original)) {
-                node.backgroundColor = state.original
-                changed = true
-                followUp = true
-              }
-              if (
-                pulse.backgroundColor &&
-                sameColor(pulse.backgroundColor, state.applied)
-              ) {
-                pulse.backgroundColor = state.original
-                changed = true
-                followUp = true
-              }
+            if (state.overlay && !state.overlay.isDestroyed) {
+              state.overlay.destroy()
+            }
+            if (state.tint) {
+              pulse._backgroundColor = node.backgroundColor
+              pulse.requestRender?.()
             }
             states.delete(node)
           }
@@ -160,28 +155,10 @@ export default Plugin.define({
       for (const [tab, state] of states) {
         const node = tab as any
         if (live.has(tab) && !node.isDestroyed) continue
-        if (!node.isDestroyed && state.applied) {
-          node.backgroundColor = state.original
-          changed = true
-          followUp = true
+        if (state.overlay && !state.overlay.isDestroyed) {
+          state.overlay.destroy()
         }
         states.delete(tab)
-      }
-
-      if (changed && !paint) {
-        paint = setTimeout(() => {
-          paint = undefined
-          context.renderer.requestRender()
-        }, 0)
-      }
-      // The host may overwrite the tint while its selection animation settles.
-      // Rescan once more after that animation to put the tint back on top.
-      if (followUp && !rescan) {
-        rescan = setTimeout(() => {
-          rescan = undefined
-          lastScan = 0
-          apply()
-        }, RESCAN_MS)
       }
     }
 
@@ -195,13 +172,10 @@ export default Plugin.define({
     }, 0)
     return () => {
       clearTimeout(kick)
-      if (paint) clearTimeout(paint)
-      if (rescan) clearTimeout(rescan)
       context.renderer.off(CliRenderEvents.FRAME, apply)
-      for (const [tab, state] of states) {
-        const node = tab as any
-        if (!node.isDestroyed && state.applied) {
-          node.backgroundColor = state.original
+      for (const state of states.values()) {
+        if (state.overlay && !state.overlay.isDestroyed) {
+          state.overlay.destroy()
         }
       }
       states.clear()
