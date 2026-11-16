@@ -2,39 +2,249 @@ import {
   BoxRenderable,
   CliRenderEvents,
   Renderable,
+  RGBA,
   type OptimizedBuffer,
   type RenderContext,
-  type RGBA,
 } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
+
+// Tint refresh interval.
+const RESCAN_MS = 100
+// Heavy vertical line used for the prompt box's left border.
+const PROMPT_BORDER = 0x2503
+// Share of the prompt border color blended over the page.
+const TINT_OPACITY = 0.4
+
+type Theme = {
+  background: {
+    base: RGBA
+    action: { primary: { hovered: RGBA } }
+  }
+  border: { base: RGBA }
+}
+
+type TabState = {
+  overlay: BoxRenderable | undefined
+  tint: RGBA | undefined
+  pulse: any | undefined
+}
+
+const sameColor = (a: RGBA | undefined, b: RGBA | undefined) =>
+  a === b || (a !== undefined && b !== undefined && a.equals?.(b) === true)
+
+function fade(color: RGBA, base: RGBA): RGBA {
+  const [r, g, b] = color.toInts()
+  const [br, bg, bb] = base.toInts()
+  const mix = (from: number, to: number) =>
+    Math.round(to + (from - to) * TINT_OPACITY)
+  const Color = base.constructor as {
+    fromInts: (r: number, g: number, b: number) => RGBA
+  }
+  return Color.fromInts(mix(r!, br!), mix(g!, bg!), mix(b!, bb!))
+}
+
+function findPulse(node: any): any {
+  return node
+    .getChildren?.()
+    .find(
+      (child: any) =>
+        typeof child.id === "string" && child.id.startsWith("tab_pulse-"),
+    )
+}
+
+function findTitle(node: any): any {
+  for (const child of node.getChildren?.() ?? []) {
+    if (
+      typeof child.id === "string" &&
+      child.id.startsWith("title_shimmer-")
+    ) {
+      return child
+    }
+    const title = findTitle(child)
+    if (title) return title
+  }
+}
 
 export default Plugin.define({
   id: "local.taller-tabs",
   setup(context) {
     let strip: BoxRenderable | undefined
     const edges = new Map<BoxRenderable, HalfRowPulse>()
+    const states = new Map<BoxRenderable, TabState>()
+    let lastScan = 0
+    let promptLine: RGBA | undefined
+
+    const promptBorder = (theme: Theme): RGBA => {
+      try {
+        const buffer = context.renderer.currentRenderBuffer as any
+        const found = buffer.withBuffers((cells: any) => {
+          let bestX = Infinity
+          let best: RGBA | undefined
+          for (let y = Math.max(0, cells.height - 10); y < cells.height; y++) {
+            for (let x = 0; x < bestX && x < cells.width; x++) {
+              const index = y * cells.width + x
+              if (cells.char[index] !== PROMPT_BORDER) continue
+              bestX = x
+              best = RGBA.fromArray(cells.fg.slice(index * 4, index * 4 + 4))
+            }
+          }
+          return best
+        })
+        if (found) promptLine = found
+      } catch {}
+      return promptLine ?? theme.border.base
+    }
+
+    const release = (tab: BoxRenderable, state: TabState) => {
+      if (state.overlay && !state.overlay.isDestroyed) {
+        state.overlay.destroy()
+      }
+      if (
+        state.pulse &&
+        !state.pulse.isDestroyed &&
+        !tab.isDestroyed &&
+        state.tint
+      ) {
+        state.pulse._backgroundColor = tab.backgroundColor
+        state.pulse.requestRender?.()
+      }
+      state.overlay = undefined
+      state.tint = undefined
+      state.pulse = undefined
+    }
+
     const apply = () => {
-      for (const [tab] of edges) {
+      for (const tab of edges.keys()) {
         if (tab.isDestroyed) edges.delete(tab)
       }
-      if (!strip || strip.isDestroyed) strip = findStrip(context.renderer.root, context.renderer.width)
+      for (const tab of states.keys()) {
+        if (tab.isDestroyed) states.delete(tab)
+      }
+      if (!strip || strip.isDestroyed) {
+        strip = findStrip(context.renderer.root, context.renderer.width)
+      }
       if (!strip) return
       if (strip.height === 1) strip.height = 2
-      for (const tab of strip.getChildren()) {
-        if (!(tab instanceof BoxRenderable) || edges.has(tab)) continue
-        const pulse = tab.getChildren().find((part) => part.id.startsWith("tab_pulse-"))
+
+      const tabs: Array<{
+        tab: BoxRenderable
+        pulse: any
+        title: any
+      }> = []
+      for (const child of strip.getChildren()) {
+        if (!(child instanceof BoxRenderable)) continue
+        const pulse = findPulse(child)
         if (!pulse) continue
-        const edge = new HalfRowPulse(context.renderer, tab, pulse, () => context.theme.background.base)
-        tab.add(edge)
-        edges.set(tab, edge)
+        tabs.push({ tab: child, pulse, title: findTitle(child) })
+        if (!edges.has(child)) {
+          const edge = new HalfRowPulse(
+            context.renderer,
+            child,
+            pulse,
+            () => states.get(child)?.tint,
+            () => context.theme.background.base,
+          )
+          child.add(edge)
+          edges.set(child, edge)
+        }
+      }
+      if (tabs.length === 0) return
+
+      const theme = context.theme as unknown as Theme
+      const selected = tabs.map(
+        ({ tab, title }) =>
+          ((title?.attributes ?? 0) & 1) !== 0 &&
+          !sameColor(
+            tab.backgroundColor,
+            theme.background.action.primary.hovered,
+          ),
+      )
+
+      // The host gives the selected tab the leftover width. Match it to the
+      // median neighbor and shrink the title to fit the narrower box.
+      const current = selected.findIndex(Boolean)
+      if (current !== -1 && tabs.length > 1) {
+        const widths = tabs
+          .filter((_, index) => index !== current)
+          .map(({ tab }) => tab.width)
+          .filter((width) => Number.isFinite(width) && width > 0)
+          .sort((a, b) => a - b)
+        if (widths.length > 0) {
+          const target = widths[Math.floor(widths.length / 2)]!
+          const tab = tabs[current]!.tab
+          if (tab.width !== target) tab.width = target
+          const title = tabs[current]!.title
+          if (title) {
+            const count =
+              (context.ui.tabs.list?.() ?? []).length || tabs.length
+            const number = Math.max(2, String(count + 1).length)
+            const width = Math.max(1, target - 1 - number - 2)
+            if (title.width !== width) title.width = width
+          }
+        }
+      }
+
+      const now = Date.now()
+      if (now - lastScan < RESCAN_MS) return
+      lastScan = now
+
+      let tint: RGBA | undefined
+      for (let index = 0; index < tabs.length; index++) {
+        const { tab, pulse } = tabs[index]!
+        let state = states.get(tab)
+        if (!state) {
+          state = { overlay: undefined, tint: undefined, pulse: undefined }
+          states.set(tab, state)
+        }
+        if (selected[index] || pulse.inner?.active === true) {
+          tint ??= fade(promptBorder(theme), theme.background.base)
+          state.pulse = pulse
+
+          if (!state.overlay || state.overlay.isDestroyed) {
+            state.overlay = new BoxRenderable(context.renderer, {
+              id: `local-tab-tint-${pulse.id}`,
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: "100%",
+              zIndex: 0,
+              backgroundColor: tint,
+            })
+            tab.add(state.overlay, 0)
+          } else if (!sameColor(state.overlay.backgroundColor, tint)) {
+            state.overlay.backgroundColor = tint
+          }
+
+          if (!sameColor(state.tint, tint)) {
+            state.tint = tint
+            pulse._backgroundColor = tint
+            pulse.requestRender?.()
+          }
+        } else {
+          release(tab, state)
+          states.delete(tab)
+        }
       }
     }
+
     context.renderer.on(CliRenderEvents.FRAME, apply)
+    const kick = setTimeout(() => {
+      lastScan = 0
+      apply()
+      context.renderer.requestRender()
+    }, 0)
     return () => {
+      clearTimeout(kick)
       context.renderer.off(CliRenderEvents.FRAME, apply)
       for (const edge of edges.values()) {
         if (!edge.isDestroyed) edge.destroy()
       }
+      for (const [tab, state] of states) {
+        release(tab, state)
+      }
+      edges.clear()
+      states.clear()
       if (strip && !strip.isDestroyed) strip.height = 1
     }
   },
@@ -45,6 +255,7 @@ class HalfRowPulse extends Renderable {
     context: RenderContext,
     private tab: BoxRenderable,
     private pulse: Renderable,
+    private tint: () => RGBA | undefined,
     private page: () => RGBA,
   ) {
     super(context, {
@@ -59,20 +270,30 @@ class HalfRowPulse extends Renderable {
   }
 
   protected override renderSelf(buffer: OptimizedBuffer, deltaTime: number) {
-    // Use the tint handed over by the running-tab plugin so the half-row
-    // matches even while the host rewrites the pulse background. With a tint,
-    // fill the whole row so the tab matches the prompt box uniformly.
-    const tint = (this.tab as any).__localTabTint as RGBA | undefined
+    const tint = this.tint()
     const background = tint ?? this.page()
-    const base = tint ?? (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
+    const base =
+      tint ?? (this.pulse as any)._backgroundColor ?? this.tab.backgroundColor
     if (!base.equals?.((this.pulse as any)._backgroundColor)) {
       ;(this.pulse as any)._backgroundColor = base
     }
-    buffer.drawText("▀".repeat(this.width), this.screenX, this.screenY, base, background)
+    buffer.drawText(
+      "▀".repeat(this.width),
+      this.screenX,
+      this.screenY,
+      base,
+      background,
+    )
 
     // Replay the host pulse's paint, not its clock: every half-row cell uses
     // exactly the same running, glow, and completion color as the row above.
-    const mirror: OptimizedBuffer["setCell"] = (x, _y, _char, _foreground, color) => {
+    const mirror: OptimizedBuffer["setCell"] = (
+      x,
+      _y,
+      _char,
+      _foreground,
+      color,
+    ) => {
       buffer.setCell(x, this.screenY, "▀", color, background)
     }
     const canvas = new Proxy(buffer, {
@@ -82,7 +303,10 @@ class HalfRowPulse extends Renderable {
         return typeof value === "function" ? value.bind(target) : value
       },
     })
-    const paint = Reflect.get(this.pulse, "renderSelf") as (buffer: OptimizedBuffer, deltaTime: number) => void
+    const paint = Reflect.get(this.pulse, "renderSelf") as (
+      buffer: OptimizedBuffer,
+      deltaTime: number,
+    ) => void
     paint.call(this.pulse, canvas, deltaTime)
   }
 }
@@ -97,7 +321,13 @@ function findStrip(node: Renderable, width: number): BoxRenderable | undefined {
     node.getChildren().some(
       (tab) =>
         tab.getChildren().some((part) => part.id.startsWith("tab_pulse-")) &&
-        tab.getChildren().some((row) => row.getChildren().some((label) => label.id.startsWith("title_shimmer-"))),
+        tab
+          .getChildren()
+          .some((row) =>
+            row
+              .getChildren()
+              .some((label) => label.id.startsWith("title_shimmer-")),
+          ),
     )
   ) {
     return node

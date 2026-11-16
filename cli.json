@@ -28,7 +28,6 @@
   },
   "plugins": [
     "./ui-plugins/taller-tabs",
-    "./ui-plugins/accent-running-tab",
     "./ui-plugins/timestamps-final",
     "./ui-plugins/find-conversation",
     "./ui-plugins/shift-enter-newline"
