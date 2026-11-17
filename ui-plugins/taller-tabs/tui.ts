@@ -170,7 +170,12 @@ export default Plugin.define({
     }
 
     context.renderer.on(CliRenderEvents.FRAME, apply)
+    const kick = setTimeout(() => {
+      apply()
+      if (!context.renderer.isDestroyed) context.renderer.requestRender()
+    }, 0)
     return () => {
+      clearTimeout(kick)
       context.renderer.off(CliRenderEvents.FRAME, apply)
       clearBanner()
       restoreHandlers()
