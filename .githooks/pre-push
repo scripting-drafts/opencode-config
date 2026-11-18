@@ -1,0 +1,14 @@
+#!/bin/sh
+# Block pushes that fail the test suite.
+set -e
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+bun_bin=$(command -v bun 2>/dev/null || echo "$HOME/.bun/bin/bun")
+if [ ! -x "$bun_bin" ]; then
+  echo "pre-push: bun not found; install it or add ~/.bun/bin to PATH" >&2
+  exit 1
+fi
+
+echo "pre-push: running tests"
+"$bun_bin" test tests
