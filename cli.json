@@ -26,6 +26,9 @@
     "scope": "cwd",
     "mode": "on"
   },
+  "keybinds": {
+    "session.tab.close": "ctrl+w"
+  },
   "plugins": [
     "./ui-plugins/taller-tabs",
     "./ui-plugins/timestamps-final",

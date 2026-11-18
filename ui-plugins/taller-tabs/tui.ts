@@ -8,18 +8,15 @@ import {
 } from "@opentui/core"
 import { Plugin } from "@opencode/plugin/tui"
 
-// The host truncates tab titles to fit the strip. Clicking a tab reveals its
-// full title, plus the session's working directory, in a short-lived banner.
-const BANNER_MS = 4000
+// The host renders one-row horizontal tabs. This plugin gives the strip a
+// second row and keeps long tab names static and readable while hovered.
+type MouseHandler = (event: any) => void
 
-type TabHit = {
-  key: string
-  x: number
-  y: number
-  width: number
-  height: number
-  title: string
-  sessionID?: string
+type TabHoverPatch = {
+  previousOver?: MouseHandler
+  previousOut?: MouseHandler
+  over: MouseHandler
+  out: MouseHandler
 }
 
 export default Plugin.define({
@@ -27,146 +24,166 @@ export default Plugin.define({
   setup(context) {
     let strip: BoxRenderable | undefined
     const edges = new Map<BoxRenderable, HalfRowPulse>()
-    let hits: TabHit[] = []
-    let banner: Banner | undefined
-    let bannerTimer: ReturnType<typeof setTimeout> | undefined
-    let down: { key: string; x: number; y: number } | undefined
-    let wrapped: BoxRenderable | undefined
-    let previousDown: ((event: any) => void) | undefined
-    let previousUp: ((event: any) => void) | undefined
-    let downHandler: ((event: any) => void) | undefined
-    let upHandler: ((event: any) => void) | undefined
+    const hoveredTabs = new Set<BoxRenderable>()
+    const tabHoverPatches = new Map<BoxRenderable, TabHoverPatch>()
+    const titleOverlays = new Map<BoxRenderable, StaticTitle>()
+    let applyFailures = 0
 
-    const hitAt = (x: number, y: number) =>
-      hits.find((hit) => x >= hit.x && x < hit.x + hit.width && y >= hit.y && y < hit.y + hit.height)
-
-    const clearBanner = () => {
-      if (bannerTimer) {
-        clearTimeout(bannerTimer)
-        bannerTimer = undefined
-      }
-      if (banner && !banner.isDestroyed) banner.destroy()
-      banner = undefined
-      if (!context.renderer.isDestroyed) context.renderer.requestRender()
+    const destroyTitleOverlay = (tab: BoxRenderable) => {
+      const overlay = titleOverlays.get(tab)
+      if (overlay && !overlay.isDestroyed) overlay.destroy()
+      titleOverlays.delete(tab)
     }
 
-    const showBanner = (hit: TabHit) => {
-      const title = hit.title.replace(/\s+/g, " ").trim()
-      if (!title) return
-      clearBanner()
-      const session = hit.sessionID ? (context.data.session.get(hit.sessionID) as any) : undefined
-      const directory = session?.location?.directory
-      const theme = context.theme as any
-      const width = Math.max(
-        8,
-        Math.min(
-          context.renderer.width - 2,
-          Math.max(Bun.stringWidth(title), directory ? Bun.stringWidth(directory) : 0) + 4,
-        ),
-      )
-      const height = directory ? 2 : 1
-      const left = Math.max(0, Math.min(hit.x, context.renderer.width - width))
-      const top = Math.max(2, Math.min(context.renderer.height - height, hit.y + hit.height))
-      try {
-        banner = new Banner(
+    const updateTitleOverlay = (tab: BoxRenderable, source: any) => {
+      if (!source || source.isDestroyed) {
+        destroyTitleOverlay(tab)
+        return
+      }
+      const width = Math.max(1, Math.floor(Number(source.width) || 0))
+      const height = Math.max(1, Math.floor(Number(source.height) || 0))
+      const left = (Number(source.screenX) || 0) - (Number(tab.screenX) || 0)
+      const top = (Number(source.screenY) || 0) - (Number(tab.screenY) || 0)
+      let overlay = titleOverlays.get(tab)
+      if (!overlay || overlay.isDestroyed) {
+        overlay = new StaticTitle(
           context.renderer,
-          title,
-          directory,
-          theme.text.base,
-          theme.text.muted,
-          theme.background.raised?.high ?? theme.background.raised?.base ?? theme.background.base,
-          theme.hue?.blue?.[200] ?? theme.text.base,
-          width,
-          height,
+          tab,
+          source,
+          () => context.theme.background.base,
+          () => context.theme.text.base,
           left,
           top,
+          width,
+          height,
         )
-        context.renderer.root.add(banner)
-        context.renderer.requestRender()
-        bannerTimer = setTimeout(clearBanner, BANNER_MS)
-      } catch {
-        context.ui.toast.show({ title, message: directory ?? "", duration: BANNER_MS })
+        tab.add(overlay)
+        titleOverlays.set(tab, overlay)
+      } else {
+        overlay.source = source
+        overlay.left = left
+        overlay.top = top
+        overlay.width = width
+        overlay.height = height
       }
+      overlay.visible = hoveredTabs.has(tab)
     }
 
-    const restoreHandlers = () => {
-      if (wrapped && !wrapped.isDestroyed) {
-        if ((wrapped as any)._mouseListeners?.down === downHandler) wrapped.onMouseDown = previousDown
-        if ((wrapped as any)._mouseListeners?.up === upHandler) wrapped.onMouseUp = previousUp
+    const restoreTabHover = (tab: BoxRenderable) => {
+      const patch = tabHoverPatches.get(tab)
+      if (patch && !tab.isDestroyed) {
+        const host = tab as any
+        if (host._mouseListeners?.over === patch.over) tab.onMouseOver = patch.previousOver
+        if (host._mouseListeners?.out === patch.out) tab.onMouseOut = patch.previousOut
       }
-      wrapped = undefined
-      previousDown = undefined
-      previousUp = undefined
-      downHandler = undefined
-      upHandler = undefined
-      down = undefined
+      tabHoverPatches.delete(tab)
+      hoveredTabs.delete(tab)
+      const overlay = titleOverlays.get(tab)
+      if (overlay) overlay.visible = false
     }
 
-    // Wrap the strip's own mouse handlers so a click can reveal the full name
-    // without taking over selection, dragging, or the close button.
-    const attachHandlers = () => {
-      if (!strip || strip.isDestroyed) return
-      if (wrapped === strip && (strip as any)._mouseListeners?.up === upHandler) return
-      restoreHandlers()
-      const target = strip
-      wrapped = target
-      const host = target as any
-      const previousDownHandler = host._mouseListeners?.down
-      const previousUpHandler = host._mouseListeners?.up
-      previousDown = previousDownHandler
-      previousUp = previousUpHandler
-      downHandler = (event: any) => {
-        previousDownHandler?.call(target, event)
-        if (event.propagationStopped || event.button !== 0) return
-        const hit = hitAt(event.x, event.y)
-        down = hit ? { key: hit.key, x: event.x, y: event.y } : undefined
+    const restoreTabPatches = () => {
+      for (const tab of [...tabHoverPatches.keys()]) restoreTabHover(tab)
+      for (const tab of [...titleOverlays.keys()]) {
+        destroyTitleOverlay(tab)
+        hoveredTabs.delete(tab)
       }
-      upHandler = (event: any) => {
-        previousUpHandler?.call(target, event)
-        if (event.propagationStopped || event.button !== 0) return
-        const start = down
-        down = undefined
-        if (!start) return
-        if (Math.abs(event.x - start.x) > 1 || Math.abs(event.y - start.y) > 1) return
-        const hit = hitAt(event.x, event.y)
-        if (hit?.key === start.key) showBanner(hit)
+      hoveredTabs.clear()
+    }
+
+    const patchTabHover = (tab: BoxRenderable) => {
+      const host = tab as any
+      const existing = tabHoverPatches.get(tab)
+      if (
+        existing &&
+        host._mouseListeners?.over === existing.over &&
+        host._mouseListeners?.out === existing.out
+      ) {
+        return
       }
-      target.onMouseDown = downHandler
-      target.onMouseUp = upHandler
+      if (existing) restoreTabHover(tab)
+      const previousOver = host._mouseListeners?.over
+      const previousOut = host._mouseListeners?.out
+      const over = (event: any) => {
+        hoveredTabs.add(tab)
+        const overlay = titleOverlays.get(tab)
+        if (overlay) overlay.visible = true
+        previousOver?.call(tab, event)
+      }
+      const out = (event: any) => {
+        previousOut?.call(tab, event)
+        hoveredTabs.delete(tab)
+        const overlay = titleOverlays.get(tab)
+        if (overlay) overlay.visible = false
+      }
+      tab.onMouseOver = over
+      tab.onMouseOut = out
+      tabHoverPatches.set(tab, { previousOver, previousOut, over, out })
     }
 
     const apply = () => {
-      for (const [tab] of edges) {
-        if (tab.isDestroyed) edges.delete(tab)
-      }
-      if (!strip || strip.isDestroyed) strip = findStrip(context.renderer.root, context.renderer.width)
-      if (!strip) return
-      if (strip.height === 1) strip.height = 2
-      const sessions = context.ui.tabs.list?.() ?? []
-      hits = []
-      for (const tab of strip.getChildren()) {
-        if (!(tab instanceof BoxRenderable)) continue
-        const pulse = tab.getChildren().find((part) => part.id.startsWith("tab_pulse-"))
-        if (!pulse) continue
-        if (!edges.has(tab)) {
-          const edge = new HalfRowPulse(context.renderer, tab, pulse, () => context.theme.background.base)
-          tab.add(edge)
-          edges.set(tab, edge)
+      try {
+        for (const [tab] of edges) {
+          if (tab.isDestroyed) edges.delete(tab)
         }
-        const titleNode = findTitle(tab)
-        const title = titleNode?._rename?.title ?? titleNode?.plainText ?? ""
-        const sessionID = sessions.find((session) => session.title === title)?.sessionID
-        hits.push({
-          key: sessionID ?? `${title}\n${tab.screenX}`,
-          x: tab.screenX,
-          y: tab.screenY,
-          width: tab.width,
-          height: tab.height,
-          title,
-          sessionID,
-        })
+        for (const [tab] of tabHoverPatches) {
+          if (tab.isDestroyed) {
+            hoveredTabs.delete(tab)
+            tabHoverPatches.delete(tab)
+          }
+        }
+        for (const [tab, overlay] of titleOverlays) {
+          if (tab.isDestroyed || overlay.isDestroyed) titleOverlays.delete(tab)
+        }
+        if (strip && (strip.isDestroyed || strip.width !== context.renderer.width || strip.screenY !== 0)) {
+          restoreTabPatches()
+          for (const edge of edges.values()) {
+            if (!edge.isDestroyed) edge.destroy()
+          }
+          edges.clear()
+          if (!strip.isDestroyed) strip.height = 1
+          strip = undefined
+        }
+        if (!strip) strip = findStrip(context.renderer.root, context.renderer.width)
+        if (!strip) return
+        if (strip.height === 1) strip.height = 2
+        for (const child of strip.getChildren()) {
+          if (!(child instanceof BoxRenderable) || !hasPulse(child)) continue
+          const pulse = child.getChildren().find(
+            (part) => typeof part.id === "string" && part.id.startsWith("tab_pulse-"),
+          )
+          if (!pulse) continue
+          const edge = edges.get(child)
+          if (edge && (edge.isDestroyed || edge.pulse !== pulse)) {
+            if (!edge.isDestroyed) edge.destroy()
+            edges.delete(child)
+          }
+          if (!edges.has(child)) {
+            const nextEdge = new HalfRowPulse(
+              context.renderer,
+              child,
+              pulse,
+              () => context.theme.background.base,
+            )
+            child.add(nextEdge)
+            edges.set(child, nextEdge)
+          }
+          patchTabHover(child)
+          updateTitleOverlay(child, findTitle(child))
+        }
+        applyFailures = 0
+      } catch {
+        applyFailures++
+        if (applyFailures < 3) return
+        context.renderer.off(CliRenderEvents.FRAME, apply)
+        restoreTabPatches()
+        for (const edge of edges.values()) {
+          if (!edge.isDestroyed) edge.destroy()
+        }
+        edges.clear()
+        if (strip && !strip.isDestroyed) strip.height = 1
+        strip = undefined
       }
-      attachHandlers()
     }
 
     context.renderer.on(CliRenderEvents.FRAME, apply)
@@ -177,15 +194,58 @@ export default Plugin.define({
     return () => {
       clearTimeout(kick)
       context.renderer.off(CliRenderEvents.FRAME, apply)
-      clearBanner()
-      restoreHandlers()
+      restoreTabPatches()
       for (const edge of edges.values()) {
         if (!edge.isDestroyed) edge.destroy()
       }
+      edges.clear()
       if (strip && !strip.isDestroyed) strip.height = 1
+      strip = undefined
     }
   },
 })
+
+const FORMAT_CONTROL =
+  /[\p{Cc}\u00AD\u061C\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u
+
+function displayText(value: string): string {
+  let result = ""
+  for (const character of value) {
+    if (!FORMAT_CONTROL.test(character)) result += character
+  }
+  return result.replace(/\s+/g, " ").trim()
+}
+
+const graphemeSegmenter =
+  typeof Intl !== "undefined" && "Segmenter" in Intl
+    ? new (Intl as any).Segmenter(undefined, { granularity: "grapheme" })
+    : undefined
+
+function clip(text: string, max: number) {
+  if (max <= 0) return ""
+  if (Bun.stringWidth(text) <= max) return text
+  const parts = graphemeSegmenter
+    ? Array.from(graphemeSegmenter.segment(text), (part: any) => part.segment as string)
+    : Array.from(text)
+  let result = ""
+  let width = 0
+  for (const part of parts) {
+    const next = Bun.stringWidth(part)
+    if (width + next > max) break
+    result += part
+    width += next
+  }
+  return result
+}
+
+function fitTitle(text: string, width: number): string {
+  if (Bun.stringWidth(text) <= width) return text
+  return width > 1 ? `${clip(text, width - 1)}…` : clip(text, width)
+}
+
+function hasPulse(node: Renderable): boolean {
+  return node.getChildren().some((part) => typeof part.id === "string" && part.id.startsWith("tab_pulse-"))
+}
 
 function findTitle(node: any): any {
   for (const child of node.getChildren?.() ?? []) {
@@ -195,58 +255,47 @@ function findTitle(node: any): any {
   }
 }
 
-function clip(text: string, max: number) {
-  if (max <= 0) return ""
-  if (Bun.stringWidth(text) <= max) return text
-  let result = ""
-  let width = 0
-  for (const character of text) {
-    const next = Bun.stringWidth(character)
-    if (width + next > max) break
-    result += character
-    width += next
-  }
-  return result
-}
-
-class Banner extends Renderable {
+class StaticTitle extends Renderable {
   constructor(
     context: RenderContext,
-    private title: string,
-    private directory: string | undefined,
-    private fg: RGBA,
-    private muted: RGBA,
-    private background: RGBA,
-    private accent: RGBA,
-    width: number,
-    height: number,
+    private tab: BoxRenderable,
+    public source: any,
+    private pageBackground: () => RGBA,
+    private pageForeground: () => RGBA,
     left: number,
     top: number,
+    width: number,
+    height: number,
   ) {
     super(context, {
-      id: `local-tab-name-${Date.now()}`,
+      id: `local-static-title-${tab.id}`,
       position: "absolute",
       left,
       top,
       width,
       height,
-      zIndex: 20,
+      zIndex: 2,
+      visible: false,
     })
   }
 
   protected override renderSelf(buffer: OptimizedBuffer, _deltaTime: number) {
-    buffer.fillRect(this.screenX, this.screenY, this.width, this.height, this.background)
-    buffer.fillRect(this.screenX, this.screenY, 1, this.height, this.accent)
-    buffer.drawText(clip(this.title, this.width - 3), this.screenX + 2, this.screenY, this.fg, this.background)
-    if (this.directory) {
-      buffer.drawText(
-        clip(this.directory, this.width - 3),
-        this.screenX + 2,
-        this.screenY + 1,
-        this.muted,
-        this.background,
-      )
+    if (this.source?.isDestroyed) return
+    const width = Math.max(0, Math.floor(this.width))
+    const height = Math.max(0, Math.floor(this.height))
+    if (width <= 0 || height <= 0) return
+    const background = this.tab.backgroundColor ?? this.pageBackground()
+    buffer.fillRect(this.screenX, this.screenY, width, height, background)
+    const foreground = this.source.fg ?? this.source.color ?? this.pageForeground()
+    const attributes = typeof this.source.attributes === "number" ? this.source.attributes : undefined
+    const title = displayText(String(this.source?._rename?.title ?? ""))
+    // Cover the host's marquee completely, including its leftover glyphs.
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        buffer.setCell(this.screenX + x, this.screenY + y, " ", foreground, background)
+      }
     }
+    buffer.drawText(fitTitle(title, width), this.screenX, this.screenY, foreground, background, attributes)
   }
 }
 
@@ -254,7 +303,7 @@ class HalfRowPulse extends Renderable {
   constructor(
     context: RenderContext,
     private tab: BoxRenderable,
-    private pulse: Renderable,
+    readonly pulse: Renderable,
     private page: () => RGBA,
   ) {
     super(context, {
@@ -271,6 +320,7 @@ class HalfRowPulse extends Renderable {
   protected override renderSelf(buffer: OptimizedBuffer, deltaTime: number) {
     const background = this.page()
     buffer.drawText("▀".repeat(this.width), this.screenX, this.screenY, this.tab.backgroundColor, background)
+    if (this.pulse.isDestroyed) return
 
     // Replay the host pulse's paint, not its clock: every half-row cell uses
     // exactly the same running, glow, and completion color as the row above.
@@ -284,8 +334,13 @@ class HalfRowPulse extends Renderable {
         return typeof value === "function" ? value.bind(target) : value
       },
     })
-    const paint = Reflect.get(this.pulse, "renderSelf") as (buffer: OptimizedBuffer, deltaTime: number) => void
-    paint.call(this.pulse, canvas, deltaTime)
+    const paint = Reflect.get(this.pulse, "renderSelf")
+    if (typeof paint !== "function") return
+    try {
+      paint.call(this.pulse, canvas, deltaTime)
+    } catch {
+      // Keep the base half-row rather than break the host's frame loop.
+    }
   }
 }
 
@@ -298,8 +353,14 @@ function findStrip(node: Renderable, width: number): BoxRenderable | undefined {
     node.width === width &&
     node.getChildren().some(
       (tab) =>
-        tab.getChildren().some((part) => part.id.startsWith("tab_pulse-")) &&
-        tab.getChildren().some((row) => row.getChildren().some((label) => label.id.startsWith("title_shimmer-"))),
+        tab.getChildren().some(
+          (part) => typeof part.id === "string" && part.id.startsWith("tab_pulse-"),
+        ) &&
+        tab.getChildren().some((row) =>
+          row.getChildren().some(
+            (label) => typeof label.id === "string" && label.id.startsWith("title_shimmer-"),
+          ),
+        ),
     )
   ) {
     return node
